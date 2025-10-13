@@ -102,10 +102,10 @@ class CppCodeErrorAnalyzer:
             # Parse error messages
             error_messages = []
             if result.returncode != 0:
-                # Combine stdout and stderr
+                
                 full_output = (result.stdout + '\n' + result.stderr).strip()
                 
-                # Split into individual error lines
+                
                 lines = full_output.split('\n')
                 for line in lines:
                     line = line.strip()
