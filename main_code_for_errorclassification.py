@@ -1,26 +1,37 @@
+"""
+CppCodeErrorAnalyzer.py - FIXED VERSION
+Analyzes C++ code and classifies compilation errors
+"""
 import subprocess
 import os
 import tempfile
-import re
-from pathlib import Path
-import pandas as pd
+import shutil
 import pickle
 from typing import List, Dict, Tuple, Optional
+
 
 class CppCodeErrorAnalyzer:
     def __init__(self, model_path='cpp_error_classifier.pkl'):
         """Initialize the analyzer with a trained model"""
         self.classifier = None
         self.model_path = model_path
+        self.compiler_available = self._check_compiler()
         self.load_classifier()
+    
+    def _check_compiler(self) -> bool:
+        """Check if g++ compiler is available"""
+        return shutil.which('g++') is not None
     
     def load_classifier(self):
         """Load the trained error classification model"""
         try:
+            if not os.path.exists(self.model_path):
+                raise FileNotFoundError(f"Model file '{self.model_path}' not found.")
+            
             with open(self.model_path, 'rb') as f:
                 model_data = pickle.load(f)
             
-            # Create a simple classifier object to hold the components
+            # Create a simple classifier wrapper
             class SimpleClassifier:
                 def __init__(self, model_data):
                     self.best_model = model_data['best_model']
@@ -30,7 +41,7 @@ class CppCodeErrorAnalyzer:
                 
                 def predict_error_type(self, error_message):
                     """Predict error type for a message"""
-                    # Simple preprocessing (you might want to use the full preprocessing)
+                    # Preprocess (simplified)
                     processed = error_message.lower()
                     
                     # Vectorize
@@ -52,14 +63,21 @@ class CppCodeErrorAnalyzer:
                     return predicted_class, confidence_dict
             
             self.classifier = SimpleClassifier(model_data)
-            print(f"Model loaded successfully: {self.classifier.best_model_name}")
+            print(f"✓ Model loaded successfully: {self.classifier.best_model_name}")
+            
+            if not self.compiler_available:
+                print("\n⚠️  WARNING: g++ compiler not found!")
+                print("Install g++ to compile and analyze C++ code:")
+                print("  - Ubuntu/Debian: sudo apt-get install g++")
+                print("  - macOS: xcode-select --install")
+                print("  - Windows: Install MinGW or use WSL")
             
         except FileNotFoundError:
-            print(f"Model file '{self.model_path}' not found.")
-            print("Please run the training script first to create the model.")
+            print(f"✗ Model file '{self.model_path}' not found.")
+            print("Please run ML_Based_Error_Classification.py first to train the model.")
             self.classifier = None
         except Exception as e:
-            print(f"Error loading model: {e}")
+            print(f"✗ Error loading model: {e}")
             self.classifier = None
     
     def compile_cpp_code(self, code: str, compiler='g++', std='c++17') -> Tuple[bool, List[str]]:
@@ -74,21 +92,27 @@ class CppCodeErrorAnalyzer:
         Returns:
             (success, error_messages): Compilation success and list of error messages
         """
+        if not self.compiler_available:
+            return False, [f"Compiler '{compiler}' not found. Please install {compiler}."]
+        
         # Create a temporary file for the C++ code
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', delete=False) as temp_file:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.cpp', delete=False, encoding='utf-8') as temp_file:
             temp_file.write(code)
             temp_cpp_path = temp_file.name
         
         try:
             # Create temporary executable path
-            temp_exe_path = temp_cpp_path.replace('.cpp', '.exe')
+            temp_exe_path = temp_cpp_path.replace('.cpp', '')
+            if os.name == 'nt':  # Windows
+                temp_exe_path += '.exe'
             
             # Compile command
             compile_cmd = [
                 compiler,
                 f'-std={std}',
                 '-o', temp_exe_path,
-                temp_cpp_path
+                temp_cpp_path,
+                '-Wall'  # Enable all warnings
             ]
             
             # Run compilation
@@ -102,15 +126,32 @@ class CppCodeErrorAnalyzer:
             # Parse error messages
             error_messages = []
             if result.returncode != 0:
-                
+                # Combine stdout and stderr
                 full_output = (result.stdout + '\n' + result.stderr).strip()
                 
-                
+                # Split into lines and filter for errors/warnings
                 lines = full_output.split('\n')
                 for line in lines:
                     line = line.strip()
-                    if line and ('error' in line.lower() or 'warning' in line.lower()):
-                        error_messages.append(line)
+                    # Look for actual error/warning messages
+                    if line and ('error:' in line.lower() or 'warning:' in line.lower()):
+                        # Clean up the line
+                        # Remove file path prefix to get just the error message
+                        if ':' in line:
+                            parts = line.split(':', 3)
+                            if len(parts) >= 4:
+                                # Format: file:line:col: error: message
+                                error_messages.append(parts[3].strip())
+                            elif len(parts) >= 2:
+                                error_messages.append(':'.join(parts[1:]).strip())
+                            else:
+                                error_messages.append(line)
+                        else:
+                            error_messages.append(line)
+                
+                # If no structured errors found, add raw output
+                if not error_messages and full_output:
+                    error_messages.append(full_output)
             
             success = result.returncode == 0
             
@@ -126,8 +167,9 @@ class CppCodeErrorAnalyzer:
         finally:
             # Clean up temporary files
             try:
-                os.unlink(temp_cpp_path)
-                if os.path.exists(temp_exe_path):
+                if os.path.exists(temp_cpp_path):
+                    os.unlink(temp_cpp_path)
+                if 'temp_exe_path' in locals() and os.path.exists(temp_exe_path):
                     os.unlink(temp_exe_path)
             except:
                 pass
@@ -161,7 +203,7 @@ class CppCodeErrorAnalyzer:
         # Analyze each error message
         classifications = []
         if error_messages:
-            print(f"Found {len(error_messages)} error/warning messages")
+            print(f"Found {len(error_messages)} error/warning message(s)\n")
             
             for i, error_msg in enumerate(error_messages, 1):
                 try:
@@ -183,6 +225,8 @@ class CppCodeErrorAnalyzer:
                         'confidence': 0.0,
                         'error': str(e)
                     })
+        else:
+            print("No errors found!")
         
         return {
             'success': True,
@@ -196,7 +240,7 @@ class CppCodeErrorAnalyzer:
     def _generate_summary(self, classifications: List[Dict]) -> Dict:
         """Generate a summary of error types found"""
         if not classifications:
-            return {'total': 0, 'by_type': {}}
+            return {'total': 0, 'by_type': {}, 'average_confidence': 0.0, 'most_common_type': 'none'}
         
         type_counts = {}
         total_confidence = 0
@@ -209,12 +253,13 @@ class CppCodeErrorAnalyzer:
             total_confidence += confidence
         
         avg_confidence = total_confidence / len(classifications) if classifications else 0
+        most_common = max(type_counts, key=type_counts.get) if type_counts else 'none'
         
         return {
             'total': len(classifications),
             'by_type': type_counts,
             'average_confidence': avg_confidence,
-            'most_common_type': max(type_counts, key=type_counts.get) if type_counts else 'none'
+            'most_common_type': most_common
         }
     
     def analyze_file(self, file_path: str, compiler='g++') -> Dict:
@@ -246,7 +291,7 @@ class CppCodeErrorAnalyzer:
         print(f"📊 Total Errors/Warnings: {results['total_errors']}")
         
         if results['total_errors'] == 0:
-            print("🎉 No errors found! Your code compiles successfully.")
+            print("\n🎉 No errors found! Your code compiles successfully.")
             return
         
         print("\n" + "-"*50)
@@ -260,8 +305,8 @@ class CppCodeErrorAnalyzer:
             confidence = cls['confidence']
             
             # Truncate long error messages
-            if len(error_msg) > 80:
-                error_msg = error_msg[:77] + "..."
+            if len(error_msg) > 100:
+                error_msg = error_msg[:97] + "..."
             
             print(f"\n{error_num}. {error_msg}")
             print(f"   🏷️  Type: {error_type.upper()}")
@@ -270,8 +315,8 @@ class CppCodeErrorAnalyzer:
             if 'all_probabilities' in cls:
                 probs = cls['all_probabilities']
                 print(f"   📊 All probabilities:")
-                for error_type_name, prob in sorted(probs.items(), key=lambda x: x[1], reverse=True):
-                    print(f"      {error_type_name}: {prob:.2%}")
+                for type_name, prob in sorted(probs.items(), key=lambda x: x[1], reverse=True):
+                    print(f"      {type_name}: {prob:.2%}")
         
         # Summary
         summary = results['summary']
@@ -285,6 +330,7 @@ class CppCodeErrorAnalyzer:
         for error_type, count in summary['by_type'].items():
             print(f"   {error_type}: {count}")
 
+
 # Example usage and testing
 def main():
     """Demonstrate the complete system"""
@@ -293,7 +339,11 @@ def main():
     analyzer = CppCodeErrorAnalyzer()
     
     if not analyzer.classifier:
-        print("Please run the training script first to create the model!")
+        print("\n✗ Please run ML_Based_Error_Classification.py first to create the model!")
+        return
+    
+    if not analyzer.compiler_available:
+        print("\n✗ g++ compiler not installed. Please install g++ to use this analyzer.")
         return
     
     # Test cases with different types of errors
@@ -387,7 +437,8 @@ int main() {
         
         print("\n" + "="*70)
     
-    print("\nDemo complete! You can now use this system with any C++ code.")
+    print("\n✓ Demo complete! You can now use this system with any C++ code.")
+
 
 if __name__ == "__main__":
     main()
