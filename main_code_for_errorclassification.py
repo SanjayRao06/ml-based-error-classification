@@ -75,7 +75,8 @@ class CppCodeErrorAnalyzer:
             
         except FileNotFoundError:
             print(f"✗ Model file '{self.model_path}' not found.")
-            print("Please run ML_Based_Error_Classification.py first to train the model.")
+            # FIXED: Pointed to the correct 'mlbec3.py' training script
+            print("Please run mlbec3.py first to train the model.")
             self.classifier = None
         except Exception as e:
             print(f"✗ Error loading model: {e}")

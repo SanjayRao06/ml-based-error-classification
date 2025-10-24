@@ -1,4 +1,5 @@
 things that i neeed to do:
-probably add a streamlit to this interface 
+probably add a streamlit to this interface - done
 make it go through python codes and cpp codes alike (something about switchbox)
 if sufficient time is present try using a gnn (not sure on this though) (implementation will be a hassle + need to learn)
+improve confidence in certain semantic errors (get it above 80%)
