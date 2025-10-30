@@ -1,1 +1,0 @@
-things that i want done: 
