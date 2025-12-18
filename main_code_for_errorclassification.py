@@ -1,185 +1,206 @@
 # main_code_for_errorclassification.py
-# This file bridges the CppErrorClassifier (ML model) with the g++ compiler.
+"""
+Demonstration script for the CppCodeErrorAnalyzer.
+The class itself is now defined in analyzers.py
 
-import subprocess
-import os
-import re
-import pickle
-import numpy as np
+This script should continue to work as the public 'analyze'
+method signature has not changed.
+"""
 
-# *** Imports the CppErrorClassifier from mlbec4.py ***
-from mlbec4 import CppErrorClassifier
+# Import the class from its new location
+# This will also import 'error_classifier.py' and check NLTK data
+from analyzers import CppCodeErrorAnalyzer, PythonCodeErrorAnalyzer
+import sys
 
-class CppCodeErrorAnalyzer:
-    """
-    Handles C++ code compilation, captures compiler output, and uses 
-    the CppErrorClassifier to classify each error message.
-    """
-    def __init__(self, model_path='cpp_error_classifier.pkl', data_path='cpp_error_dataset.csv'):
-        self.model_path = model_path
-        self.data_path = data_path
-        self.classifier = CppErrorClassifier()
-        self.load_or_train_model()
+# ... [All the helper functions for printing] ...
 
-    def check_compiler_availability(self):
-        """Checks if the 'g++' compiler is available in the system's PATH."""
-        try:
-            # Check g++ version to confirm availability
-            subprocess.run(['g++', '--version'], capture_output=True, check=True)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return False
+def print_analysis_results(results: dict, language: str):
+    """Print analysis results in a formatted way"""
+    print("\n" + "="*70)
+    print(f"{language.upper()} CODE ANALYSIS RESULTS")
+    print("="*70)
 
-    def load_or_train_model(self):
-        """Loads the pre-trained model or trains it if the file is missing."""
-        if os.path.exists(self.model_path):
-            print(f"Loading model from {self.model_path}")
-            try:
-                self.classifier.load_model(self.model_path)
-                return True
-            except Exception as e:
-                print(f"Error loading model: {e}. Retrying with training.")
-        
-        # Training logic if model load failed or file not found
-        print("Model file not found or failed to load. Initiating training...")
-        data = self.classifier.load_dataset(self.data_path)
-        if data is None or len(data) < 10:
-            print("Cannot train: Dataset is missing or too small.")
-            return False
+    if not results['success']:
+        print(
+            f"❌ Analysis failed: {results.get('error', 'Unknown error')}")
+        return
 
-        try:
-            X, y = self.classifier.prepare_features()
-            self.classifier.train_models(X, y)
-            self.classifier.save_model(self.model_path)
-            print("Training complete and new model saved.")
-            return True
-        except Exception as e:
-            print(f"Error during training: {e}")
-            return False
+    success_key = "compilation_success" if language == "C++" else "execution_success"
+    success_label = "Compilation" if language == "C++" else "Execution"
+    
+    print(
+        f"✅ {success_label} Success: {'Yes' if results[success_key] else 'No'}")
+    print(f"📊 Total Errors/Warnings: {results['total_errors']}")
 
-    def compile_and_analyze(self, code_string: str) -> dict:
-        """
-        1. Writes code to a temporary file.
-        2. Compiles the code using g++.
-        3. Parses the output and uses the ML classifier for analysis.
-        4. Cleans up temporary files.
-        """
-        temp_filename = 'temp_code.cpp'
-        exec_filename = 'a.out' if os.name != 'nt' else 'a.exe'
-        
-        try:
-            # 1. Write to temp file
-            with open(temp_filename, 'w') as f:
-                f.write(code_string)
+    if results['total_errors'] == 0 and results[success_key]:
+        print(f"\n🎉 No errors found! Your code {success_label.lower()}s successfully.")
+        return
 
-            # 2. Compile the code using g++
-            compile_command = ['g++', temp_filename, '-o', exec_filename, '-std=c++17', '-Wall']
-            result = subprocess.run(compile_command, capture_output=True, text=True, timeout=10)
-            
-            compiler_output = result.stdout + result.stderr
-            
-            if result.returncode == 0:
-                return {
-                    'success': True,
-                    'compilation_success': True,
-                    'message': "Compilation Successful.",
-                    'output': compiler_output
-                }
+    print("\n" + "-"*50)
+    print("ERROR CLASSIFICATIONS:")
+    print("~"*50)
 
-            # 3. Compilation failed, parse errors
-            return self._parse_and_classify_errors(compiler_output)
+    for cls in results['classifications']:
+        error_num = cls['error_number']
+        error_msg = cls['error_message'].replace('\n', ' ')
+        error_type = cls['predicted_type']
+        confidence = cls['confidence']
 
-        except FileNotFoundError:
-            return {
-                'success': False,
-                'error': "g++ compiler not found in PATH."
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                'success': False,
-                'error': "Compilation timed out (max 10 seconds)."
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'error': f"An unexpected error occurred: {str(e)}"
-            }
-        finally:
-            # 4. Cleanup
-            if os.path.exists(temp_filename):
-                os.remove(temp_filename)
-            if os.path.exists(exec_filename):
-                os.remove(exec_filename)
+        print(f"\n[ Error {error_num} ]")
+        print(f"  Message:    {error_msg[:100]}...")
+        print(f"  Prediction: {error_type.upper()} (Confidence: {confidence:.2%})")
+
+    print("\n" + "-"*50)
+    print("SUMMARY:")
+    print("~"*50)
+    for err_type, count in results['summary'].items():
+        print(f"  {err_type.capitalize()}: {count}")
+
+    print("\n" + "-"*50)
+    print("RAW STDERR:")
+    print("~"*50)
+    print(results.get('raw_stderr', 'N/A'))
+    print("="*70)
 
 
-    def _parse_and_classify_errors(self, output: str) -> dict:
-        """Parses compiler output into individual messages and classifies them."""
-        
-        # Regex to capture individual error/warning lines.
-        error_pattern = re.compile(r'^(.*?:\d+:\d+:\s*(?:error|warning|fatal error):.*|.*?(?:error|warning|fatal error):.*)', re.MULTILINE | re.IGNORECASE)
-        
-        # Split output into individual messages based on the pattern
-        messages = error_pattern.findall(output)
-        
-        analysis_results = []
-        total_errors = 0
-        total_warnings = 0
-        type_counts = {'lexical': 0, 'syntactic': 0, 'semantic': 0, 'other': 0}
-        
-        for msg in messages:
-            # Clean up the message slightly for better ML input
-            cleaned_msg = msg.strip()
-            
-            # Predict the error type
-            predicted_type, confidences = self.classifier.predict_error_type(cleaned_msg)
-            
-            # Tally counts
-            if 'error' in cleaned_msg.lower() or 'fatal' in cleaned_msg.lower():
-                total_errors += 1
-            elif 'warning' in cleaned_msg.lower():
-                total_warnings += 1
-                
-            if predicted_type:
-                type_counts[predicted_type] += 1
-            else:
-                type_counts['other'] += 1 # Should rarely happen if classification is good
+def run_cpp_tests(analyzer: CppCodeErrorAnalyzer):
+    """Runs a series of C++ test cases."""
+    print("\n--- RUNNING C++ TEST CASES ---")
+    
+    test_cases = [
+        {
+            'name': 'Lexical Error Example (Undeclared Identifier)',
+            'code': '''
+#include <iostream>
+using namespace std;
 
-            # Prepare confidence for display
-            top_confidence = f"{max(confidences.values()):.2%}" if confidences else "N/A"
-            
-            analysis_results.append({
-                'message': cleaned_msg,
-                'predicted_type': predicted_type,
-                'confidence': top_confidence,
-                'all_confidences': confidences
-            })
+int main() {
+    int x = 5;
+    cout << undeclared_variable << endl;  // Lexical/Semantic
+    return 0;
+}
+'''
+        },
+        {
+            'name': 'Syntactic Error Example (Missing Semicolon)',
+            'code': '''
+#include <iostream>
+using namespace std;
 
-        return {
-            'success': True,
-            'compilation_success': False,
-            'total_errors': total_errors + total_warnings,
-            'errors': analysis_results,
-            'summary': type_counts,
-            'raw_compiler_output': output
+int main() {
+    int x = 5  // Missing semicolon - Syntactic error
+    cout << x << endl;
+    return 0;
+}
+'''
+        },
+        {
+            'name': 'Semantic Error Example (Type Mismatch)',
+            'code': '''
+#include <iostream>
+#include <string>
+using namespace std;
+
+int main() {
+    int x = 5;
+    string y = "hello";
+    x = y;  // Type mismatch - Semantic error
+    cout << x << endl;
+    return 0;
+}
+'''
+        },
+        {
+            'name': 'No Errors Example',
+            'code': '''
+#include <iostream>
+using namespace std;
+
+int main() {
+    int x = 5;
+    cout << "Hello, World! x = " << x << endl;
+    return 0;
+}
+'''
         }
+    ]
 
-# If this file is run directly (for local testing/training)
-if __name__ == '__main__':
-    print("--- C++ Error Analyzer Test ---")
-    analyzer = CppCodeErrorAnalyzer()
+    # Analyze each test case
+    for i, test_case in enumerate(test_cases):
+        print(f"\n--- Test Case {i+1}: {test_case['name']} ---")
+        results = analyzer.analyze(test_case['code'])
+        print_analysis_results(results, "C++")
+
+
+def run_python_tests(analyzer: PythonCodeErrorAnalyzer):
+    """Runs a series of Python test cases."""
+    print("\n--- RUNNING PYTHON TEST CASES ---")
+
+    test_cases = [
+        {
+            'name': 'NameError (Undeclared Variable)',
+            'code': '''
+x = 5
+print(y)  # NameError
+'''
+        },
+        {
+            'name': 'SyntaxError (Missing Parenthesis)',
+            'code': '''
+print("hello"   # SyntaxError
+'''
+        },
+        {
+            'name': 'TypeError (Wrong Type Operation)',
+            'code': '''
+x = 5
+y = "hello"
+print(x + y)  # TypeError
+'''
+        },
+        {
+            'name': 'No Errors Example',
+            'code': '''
+x = 5
+y = "hello"
+print(f"x is {x} and y is {y}")
+'''
+        }
+    ]
     
-    # Test code with a simple syntactic error
-    test_code = """
-    #include <iostream>
-    int main() {
-        std::cout << "Hello" 
-        return 0;
-    } 
-    """
+    # Analyze each test case
+    for i, test_case in enumerate(test_cases):
+        print(f"\n--- Test Case {i+1}: {test_case['name']} ---")
+        results = analyzer.analyze(test_case['code'])
+        print_analysis_results(results, "Python")
+
+
+# --- Main execution ---
+
+if __name__ == "__main__":
     
-    if analyzer.check_compiler_availability():
-        results = analyzer.compile_and_analyze(test_code)
-        print("\n--- Analysis Results ---")
-        print(results)
+    # --- C++ Analyzer Test ---
+    print("Initializing C++ Analyzer...")
+    cpp_analyzer = CppCodeErrorAnalyzer()
+    
+    if not cpp_analyzer.compiler_available:
+        print("\n❌ g++ compiler not found. Skipping C++ tests.")
+    elif cpp_analyzer.classifier is None:
+        print(f"\n❌ C++ model '{cpp_analyzer.model_path}' not loaded. Skipping C++ tests.")
+        print("   Please run 'python mlbec3.py' to train the model.")
     else:
-        print("\nSkipping live test: g++ not found.")
+        print(f"C++ model '{cpp_analyzer.classifier.best_model_name}' loaded.")
+        run_cpp_tests(cpp_analyzer)
+
+    # --- Python Analyzer Test ---
+    print("\nInitializing Python Analyzer...")
+    py_analyzer = PythonCodeErrorAnalyzer()
+    
+    if py_analyzer.classifier is None:
+        print(f"\n❌ Python model '{py_analyzer.model_path}' not loaded. Skipping Python tests.")
+        print("   Please run 'python mlbec3.py' to train the model.")
+    else:
+        print(f"Python model '{py_analyzer.classifier.best_model_name}' loaded.")
+        run_python_tests(py_analyzer)
+    
+    print("\n--- Demo script finished. ---")
